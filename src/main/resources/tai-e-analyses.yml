@@ -1,7 +1,7 @@
 - description: pku software analysis courses project pointer analysis, preprocess for testcases
   analysisClass: pku.Preprocess
   id: pku-pta-preprocess
-  requires: [  ]
+  requires: [ ]
 
 - description: pku software analysis courses project pointer analysis, trivial cases
   analysisClass: pku.PointerAnalysisTrivial
@@ -50,9 +50,9 @@
 - description: call graph construction
   analysisClass: pascal.taie.analysis.graph.callgraph.CallGraphBuilder
   id: cg
-  requires: [ pta(algorithm=pta) ]
+  requires: [ pta(algorithm=cha) ]
   options:
-    algorithm: pta # | cha
+    algorithm: cha # pta
     dump: false # whether dump call graph in dot file
     dump-methods: false # whether dump reachable methods
     dump-call-edges: false # whether dump call edges
