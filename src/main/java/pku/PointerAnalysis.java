@@ -31,17 +31,41 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         super(config);
     }
 
-    // CONTENTS:
+    // CONTENTS: (see readme-ayd.md)
     // - DATA STRUCTURES: helpers for analysis
     // - - MethodThings: method info
-    // - - Sumup: Method sumup
     // - - PtrList: list of pointers used in method
     // - - CopyRel: copy relationship between vars
+    // - - Sumup: Method sumup
     // - - NewLoc: location of new statements
     //
     // - ANALYZER: analysis methods
+    // - - analyze: main entry
+    // - - collectTestResult: collect final result
+    // from the MewLoc in each MethodThings
+    // - - calcNewloc: calculate NewLoc in each method
+    // by spreading through CopyRel
+    // - - getPtrList: get PtrList of a method
+    // - - sortMethods: sort methods in call order,
+    // also do init work
+    // - - analyzeMethod: analyze CopyRel in a method
+    // by analyzing each BB, and merge them
+    // - - analyzeBB: analyze CopyRel in a BB
+    // - - mergeBB: merge CopyRel through control flow
+    // - - sumupMethod: form sumup of a method
+    // - - understandSumup: convert a Sumup in callee
+    // to the corresponding CopyRel in caller
+    // - - ptr_Callee2Caller: convert a ptr in callee
+    // to the corresponding ptr in caller, HELPER
+    // - - isNonLocal: check if a ptr is non-local, HELPER
     //
     // - POINTER DEFS: pointer definitions
+    // - - Ptr: base class
+    // - - VarPtr: individual var pointer
+    // - - StaticFieldPtr: static field pointer
+    // - - InstanceFieldPtr: instance field pointer
+    // including its base var and field
+    // - - ArrayPtr: array pointer (TODO)
     //
     // - CFG: control flow graph
 
