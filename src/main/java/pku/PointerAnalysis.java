@@ -2,6 +2,7 @@ package pku;
 
 import java.io.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -31,10 +32,170 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     }
 
     // CONTENTS:
-    // - ANALYZER: Methods performing actual analysis
-    // - DATA STRUCTURES: Data structures used in analysis
-    // - POINTER DEFS: Definitions of pointer types
-    // - CFG: Simple control flow graph utils
+    // - DATA STRUCTURES: helpers for analysis
+    // - - MethodThings: method info
+    // - - Sumup: Method sumup
+    // - - PtrList: list of pointers used in method
+    // - - CopyRel: copy relationship between vars
+    // - - NewLoc: location of new statements
+    //
+    // - ANALYZER: analysis methods
+    //
+    // - POINTER DEFS: pointer definitions
+    //
+    // - CFG: control flow graph
+
+    /* ----------------------------- DATA STRUCTURES ---------------------------- */
+
+    private final HashMap<JMethod, Integer> methods = new HashMap<>();
+    private final ArrayList<MethodThings> callOrder = new ArrayList<>();
+
+    public MethodThings getThings(JMethod method) {
+        if (methods.containsKey(method)) {
+            return callOrder.get(methods.get(method));
+        }
+        return null;
+    }
+
+    private final class MethodThings {
+        public boolean hasNew = false;
+        public boolean hasTest = false;
+        public IR ir = null;
+        public Set<Var> returns = null;
+        public SimpleCFG cfg = null;
+        public PtrList ptrList = null;
+        public Map<Integer, Integer> paramID = null;
+        public ArrayList<CopyRel> copyList = null;
+        public Sumup sumup = null;
+        public NewLoc newloc = null;
+    }
+
+    private final class Sumup {
+        // HashMap<Ptr, HashSet<Ptr>>
+        // Note: we use -1 to represent local (anonymous) object
+        public HashMap<Integer, HashSet<Integer>> obj = new HashMap<>();
+    }
+
+    private final class PtrList {
+        public final HashMap<Var, Integer> varlist = new HashMap<>();
+        public final HashMap<JField, Integer> sfieldlist = new HashMap<>();
+        public final HashMap<Var, HashMap<JField, Integer>> ifieldlist = new HashMap<>();
+        public final ArrayList<Ptr> ptrlist = new ArrayList<>();
+
+        public Ptr ptr(int i) {
+            return ptrlist.get(i);
+        }
+
+        /**
+         * Convert a var to ptr index. -1 if not found.
+         */
+        public int var2ptr(Var var) {
+            if (varlist.containsKey(var)) {
+                return varlist.get(var);
+            } else {
+                return -1;
+            }
+        }
+
+        public int sfield2ptr(JField field) {
+            if (sfieldlist.containsKey(field)) {
+                return sfieldlist.get(field);
+            } else {
+                return -1;
+            }
+        }
+
+        public int ifield2ptr(Var base, JField field) {
+            if (ifieldlist.containsKey(base) && ifieldlist.get(base).containsKey(field)) {
+                return ifieldlist.get(base).get(field);
+            } else {
+                return -1;
+            }
+        }
+
+        public int faccess2ptr(FieldAccess fa) {
+            if (fa instanceof StaticFieldAccess) {
+                return sfield2ptr(((StaticFieldAccess) fa).getFieldRef().resolve());
+            } else {
+                var base = ((InstanceFieldAccess) fa).getBase();
+                var field = ((InstanceFieldAccess) fa).getFieldRef().resolve();
+                return ifield2ptr(base, field);
+            }
+        }
+
+        public String ptr2str(int i) {
+            return ptrlist.get(i).toString();
+        }
+
+        @Override
+        public String toString() {
+            var s = "";
+            for (var i = 0; i < ptrlist.size(); i++) {
+                s += i + ": " + ptr2str(i) + "\n";
+            }
+            return s;
+        }
+    }
+
+    /**
+     * Copy relationship (a = b) for each Ptr (indexed in PtrList)
+     */
+    private final class CopyRel {
+        // Map<Ptr-ID-in-PtrList, Set<Ptr-ID-in-PtrList>>
+        public final HashMap<Integer, HashSet<Integer>> obj = new HashMap<>();
+
+        public CopyRel() {
+        }
+
+        public CopyRel(HashMap<Integer, HashSet<Integer>> a) {
+            obj.putAll(a);
+        }
+
+        public void merge(CopyRel a) {
+            a.obj.forEach((k, v) -> {
+                var set = obj.getOrDefault(k, new HashSet<>());
+                set.addAll(v);
+                obj.put(k, set);
+            });
+        }
+
+        public String tostr(PtrList list) {
+            var s = "{";
+            for (var k : obj.keySet()) {
+                var v = obj.get(k);
+                s += list.ptr2str(k) + "=[";
+                for (var i : v) {
+                    s += list.ptr2str(i) + ", ";
+                }
+                s += "], ";
+            }
+            return s + "}";
+        }
+    }
+
+    /**
+     * Location of `new` statements for each Ptr (indexed in PtrList)
+     */
+    private final class NewLoc {
+        public final HashMap<Integer, TreeSet<Integer>> obj = new HashMap<>();
+
+        public void merge(NewLoc a) {
+            a.obj.forEach((k, v) -> {
+                var set = obj.getOrDefault(k, new TreeSet<>());
+                set.addAll(v);
+                obj.put(k, set);
+            });
+        }
+
+        public String tostr(PtrList list) {
+            var s = "{";
+            for (var k : obj.keySet()) {
+                var v = obj.get(k);
+                s += list.ptr2str(k) + "=" + v.toString() + ", ";
+            }
+            return s + "}";
+        }
+    }
 
     /* -------------------------------- ANALYZER -------------------------------- */
 
@@ -52,14 +213,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     preprocess.analysis(method.getIR());
             });
         });
-        // Analysis
-        var res = visitMethod(main, 0);
-        // Collect
-        preprocess.test_pts.forEach((test_id, var) -> {
-            var pt = res.ptrlist.var2ptr(var);
-            result.put(test_id, pts.obj.get(pt));
-        });
-        // Trivial complement
+        // Analysis copy relationship
+        sortMethods(main, 0);
+        callOrder.forEach(this::analyzeMethod);
+        callOrder.forEach(this::calcNewloc);
+        callOrder.forEach(things -> collectTestResult(things, result));
+        // Calculate for each test
+        // TODO
+        // Trivial complement, avoid unsound
         var objs = new TreeSet<>(preprocess.obj_ids.values());
         preprocess.test_pts.forEach((test_id, pt) -> {
             if (!result.containsKey(test_id) || result.get(test_id).isEmpty()) {
@@ -70,119 +231,412 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         return result;
     }
 
-    private final class VisitResult {
-        public CopyRel copyrel = new CopyRel();
-        public PtrList ptrlist = new PtrList();
+    public void collectTestResult(MethodThings things, PointerAnalysisResult result) {
+        // TODO: cross-method benchmark? i.e. alloc in A, test in B
+        if (!things.hasTest) {
+            return;
+        }
+        preprocess.test_pts.forEach((test_id, var) -> {
+            var ptr = things.ptrList.var2ptr(var);
+            if (ptr == -1)
+                return;
+            var set = things.newloc.obj.getOrDefault(ptr, new TreeSet<>());
+            result.put(test_id, set);
+        });
+    }
 
-        public VisitResult() {
+    public void calcNewloc(MethodThings things) {
+        // TODO: cross-method benchmark? i.e. alloc in A, test in B
+        if (!things.hasNew) {
+            return;
+        }
+        var newloc = new NewLoc();
+        // Collect all benchmark alloc
+        for (var stmt : things.ir.getStmts()) {
+            if (stmt instanceof New) {
+                var alloc = (New) stmt;
+                if (!preprocess.obj_ids.containsKey(alloc))
+                    continue;
+                var id = preprocess.obj_ids.get(alloc);
+                var ptr = things.ptrList.var2ptr(alloc.getLValue());
+                if (ptr == -1)
+                    continue;
+                var set = newloc.obj.getOrDefault(ptr, new TreeSet<>());
+                set.add(id);
+                newloc.obj.put(ptr, set);
+            }
+        }
+        if (newloc.obj.size() == 0) {
+            return;
+        }
+        // Spread through copy relationship
+        var copy = things.copyList.get(things.copyList.size() - 1);
+        var modified = true;
+        while (modified) {
+            modified = false;
+            for (var lhs : copy.obj.keySet()) {
+                var rhs = copy.obj.get(lhs);
+                var temp = new TreeSet<Integer>();
+                for (var r : rhs) {
+                    if (newloc.obj.containsKey(r)) {
+                        var set = newloc.obj.get(r);
+                        temp.addAll(set);
+                    }
+                }
+                var set = newloc.obj.getOrDefault(lhs, new TreeSet<>());
+                if (!set.containsAll(temp)) {
+                    set.addAll(temp);
+                    newloc.obj.put(lhs, set);
+                    modified = true;
+                }
+            }
+        }
+        var sign = things.ir.getMethod().getName();
+        logger.info("{}", "#".repeat(sign.length() + 13));
+        logger.info("# NEWLOC @ {} #", sign);
+        logger.info("{}", "#".repeat(sign.length() + 13));
+        logger.info("{}", newloc.tostr(things.ptrList));
+        logger.info("{}", "^".repeat(sign.length() + 13));
+        things.newloc = newloc;
+    }
+
+    public void sortMethods(JMethod method, int level) {
+        var things = new MethodThings();
+        things.ir = method.getIR();
+        things.returns = things.ir.getReturnVars().stream().collect(Collectors.toSet());
+        things.cfg = new SimpleCFG(things.ir);
+        things.ptrList = getPtrList(things.ir);
+        things.paramID = new HashMap<>();
+        var cnt = 0;
+        for (var param : things.ir.getParams()) {
+            things.paramID.put(things.ptrList.var2ptr(param), cnt++);
+        }
+        methods.put(method, 0);
+        if (level < maxLevel) {
+            // TODO: currently dynamic invoke is considered,
+            // but the base var pointer of virtual invoke is not considered.
+            var invokes = things.ir.invokes(true);
+            invokes.forEach(invoke -> {
+                var mth = invoke.getMethodRef().resolve();
+                var className = mth.getDeclaringClass().getName();
+                var methodName = mth.getName();
+                // ignore benchmark invoke
+                if (className.equals("benchmark.internal.Benchmark")
+                        || className.equals("benchmark.internal.BenchmarkN")) {
+                    if (methodName.equals("alloc")) {
+                        things.hasNew = true;
+                    } else if (methodName.equals("test")) {
+                        things.hasTest = true;
+                    }
+                } else if (!methods.containsKey(mth)) {
+                    sortMethods(mth, level + 1);
+                }
+            });
+        }
+        callOrder.add(things);
+        methods.put(method, callOrder.size() - 1);
+    }
+
+    public void analyzeMethod(MethodThings things) {
+        if (things == null) {
+            return;
+        }
+        var ir = things.ir;
+        var cfg = things.cfg;
+        var ptrList = things.ptrList;
+
+        var sign = ir.getMethod().getSignature();
+        logger.info("{}", "#".repeat(sign.length() + 4));
+        logger.info("# {} #", sign);
+        logger.info("{}", "#".repeat(sign.length() + 4));
+        logger.info("IR:");
+        ir.stmts().forEach(stmt -> logger.info("{}: {}", stmt.getIndex(), stmt.toString()));
+        logger.info("\nCFG: \n{}", cfg.toString());
+        logger.info("PtrList: \n{}", ptrList.toString());
+
+        var copyList = new ArrayList<CopyRel>(cfg.size());
+        // Analyze each single BB
+        cfg.bbs.forEach(bb -> copyList.add(analyzeBB(things, bb)));
+
+        logger.info("Individual BB results:");
+        for (var i = 0; i < cfg.size(); i++) {
+            logger.info("BB{}: {}", i, copyList.get(i).tostr(ptrList));
+        }
+        logger.info("\n");
+
+        // Merge copy relationship through control flow
+        mergeBB(cfg, copyList);
+
+        logger.info("Merged BB results:");
+        for (var i = 0; i < cfg.size(); i++) {
+            logger.info("BB{}: {}", i, copyList.get(i).tostr(ptrList));
         }
 
-        public VisitResult(CopyRel copyrel, PtrList ptrlist) {
-            this.copyrel = copyrel;
-            this.ptrlist = ptrlist;
+        logger.info("{}", "^".repeat(sign.length() + 4));
+
+        things.copyList = copyList;
+        // Form sumup
+        things.sumup = sumupMethod(things);
+    }
+
+    /**
+     * Is a pointer in a method is non-local, i.e. params, returns, %this
+     * and all fields of these (including any static fields).
+     */
+    public boolean isNonLocal(int ptr, MethodThings things) {
+        var pptr = things.ptrList.ptr(ptr);
+        if (pptr instanceof VarPtr) {
+            var inner = ((VarPtr) pptr).var;
+            if (things.ir.isThisOrParam(inner) || things.returns.contains(inner)) {
+                return true;
+            }
+        } else if (pptr instanceof InstanceFieldPtr) {
+            var inner = ((InstanceFieldPtr) pptr).base;
+            if (things.ir.isThisOrParam(inner) || things.returns.contains(inner)) {
+                return true;
+            }
+        } else if (pptr instanceof StaticFieldPtr) {
+            // Static is always non-local
+            return true;
+        }
+        return false;
+    }
+
+    public Sumup sumupMethod(MethodThings things) {
+        var sumup = new Sumup();
+        // interest in the last BB (EXIT) only
+        var copy = things.copyList.get(things.copyList.size() - 1).obj;
+        copy.forEach((lhs, rhs) -> {
+            if (isNonLocal(lhs, things)) {
+                var set = sumup.obj.getOrDefault(lhs, new HashSet<>());
+                for (var r : rhs) {
+                    if (isNonLocal(r, things)) {
+                        set.add(r);
+                    } else {
+                        set.add(-1);
+                    }
+                }
+                sumup.obj.put(lhs, set);
+            }
+        });
+        return sumup;
+    }
+
+    public void mergeBB(SimpleCFG cfg, List<CopyRel> copyList) {
+        // TODO: is this method correct?
+        var modified = true;
+        while (modified) {
+            modified = false;
+            for (var i = 0; i < cfg.size(); i++) {
+                var bb = cfg.bbs.get(i);
+                var copy = copyList.get(i);
+                var temp = new CopyRel();
+                for (var prevbb : cfg.revEdges.get(i)) {
+                    var prevcopy = copyList.get(prevbb);
+                    for (var lhs : prevcopy.obj.keySet()) {
+                        var rhs = prevcopy.obj.get(lhs);
+                        // avoid overwrite when merging control flow (functioning KILL)
+                        if (!copy.obj.containsKey(lhs)) {
+                            var update = temp.obj.getOrDefault(lhs, new HashSet<>());
+                            update.addAll(rhs);
+                            temp.obj.put(lhs, update);
+                            modified = true;
+                        }
+                    }
+                }
+                copy.obj.putAll(temp.obj);
+            }
         }
     }
 
-    private final VisitResult visitMethod(JMethod mth, int level) {
-        if (level >= maxLevel) {
-            return new VisitResult();
-        }
-        var rep = " ".repeat(level);
-        logger.info("{}=====[IR@{}]=====", rep, mth.getName());
-        var ir = mth.getIR();
-        for (var i = 0; i < ir.getStmts().size(); i++) {
-            logger.info("{}{}: {}", rep, i, ir.getStmt(i));
-        }
-        logger.info("{}=====[PTR LIST]=====", rep);
-        var ptrlist = getPtrList(ir);
-        logger.info("{}", ptrlist.ptrlist.toString());
-        logger.info("{}=====[BASIC BLOCK]=====", rep);
-        var cfg = new SimpleCFG(ir);
-        for (var i = 0; i < cfg.size(); i++) {
-            var bb = cfg.bbs.get(i);
-            logger.info("{}{}: [{},{}] <- {}", rep, i, bb.from, bb.to,
-                    cfg.revEdges.get(i).toString());
-        }
-        logger.info("{}=====[BB INDIVIDUAL COPY]=====", rep);
-        var rellist = new ArrayList<CopyRel>(cfg.size());
-        for (var bb : cfg.bbs) {
-            rellist.add(getBBCopyRel(ptrlist, ir, bb, level));
-        }
-        for (var i = 0; i < cfg.size(); i++) {
-            logger.info("{}{}: {}", rep, i, rellist.get(i).tostr(ptrlist));
-        }
-        logger.info("{}=====[BB FLOW COPY]=====", rep);
-        // TODO: use iterative calculation (currently only once)
-        for (var i = 0; i < cfg.size(); i++) {
-            var bb = cfg.bbs.get(i);
-            var bbrel = rellist.get(i);
-            var temp = new CopyRel();
-            for (var prev : cfg.revEdges.get(i)) {
-                var prevrel = rellist.get(prev);
-                prevrel.obj.forEach((lhs, rhs) -> {
-                    // avoid overwrite when merging control flow (functioning KILL)
-                    if (!bbrel.obj.containsKey(lhs)) {
-                        var update = temp.obj.getOrDefault(lhs, new HashSet<>());
-                        update.addAll(rhs);
-                        temp.obj.put(lhs, update);
-                    }
+    public CopyRel analyzeBB(MethodThings things, BasicBlock bb) {
+        var ir = things.ir;
+        var ptrlist = things.ptrList;
+        var copyRel = new CopyRel();
+        for (var i = bb.from; i <= bb.to; i++) {
+            var stmt = ir.getStmt(i);
+            if (stmt instanceof Copy) {
+                var copy = (Copy) stmt;
+                var lhs = ptrlist.var2ptr(copy.getLValue());
+                var rhs = ptrlist.var2ptr(copy.getRValue());
+                // overwrite the relationship on serialized control flow
+                if (!copy.getRValue().isConst()) {
+                    var set = new HashSet<Integer>();
+                    set.add(rhs);
+                    copyRel.obj.put(lhs, set);
+                }
+
+            }
+            if (stmt instanceof LoadField) {
+                var load = (LoadField) stmt;
+                var lhs = ptrlist.var2ptr(load.getLValue());
+                var rhs = ptrlist.faccess2ptr(load.getRValue());
+                var set = new HashSet<Integer>();
+                set.add(rhs);
+                copyRel.obj.put(lhs, set);
+            }
+            if (stmt instanceof StoreField) {
+                var store = (StoreField) stmt;
+                var lhs = ptrlist.faccess2ptr(store.getLValue());
+                var rhs = ptrlist.var2ptr(store.getRValue());
+                if (!store.getRValue().isConst()) {
+                    var set = new HashSet<Integer>();
+                    set.add(rhs);
+                    copyRel.obj.put(lhs, set);
+                }
+            }
+            if (stmt instanceof Invoke) {
+                var invoke = (Invoke) stmt;
+                var mth = invoke.getMethodRef().resolve();
+                var callee = getThings(mth);
+                if (callee == null) {
+                    // not sumup yet, ignore
+                    continue;
+                }
+                var exp = invoke.getInvokeExp();
+                var args = exp.getArgs();
+                var recv = invoke.getLValue();
+                Var tis = null;
+                if (exp instanceof InvokeInstanceExp) {
+                    tis = ((InvokeInstanceExp) exp).getBase();
+                }
+                var sumup = understandSumup(args, tis, recv, things, callee);
+                sumup.obj.forEach((lhs, rhs) -> {
+                    // overwrite
+                    copyRel.obj.put(lhs, rhs);
                 });
             }
-            bbrel.obj.putAll(temp.obj);
         }
-        for (var i = 0; i < cfg.size(); i++) {
-            logger.info("{}{}: {}", rep, i, rellist.get(i).tostr(ptrlist));
-        }
-        logger.info("{}=====[NEW LOCATIONS]=====", rep);
-        var newloc = new NewLoc();
-        for (var stmt : ir.getStmts()) {
-            if (stmt instanceof New) {
-                var newStmt = (New) stmt;
-                var id = preprocess.getObjIdAt(newStmt);
-                var lva = ptrlist.var2ptr(newStmt.getLValue());
-                // Somehow IR only uses temp value to store
-                // new, so we donot need to check the newloc
-                // for if there is already the same lva.
-                var set = new TreeSet<Integer>();
-                set.add(id);
-                newloc.obj.put(lva, set);
+        // Spread through field
+        // If (1) a.f, b.f are all Ptr; (2) a.f is not recorded in copyRel,
+        // i.e., there is no Stmt overwrites it; (3) we know a = b,
+        // then, we add a.f = b.f.
+        for (var a : things.ptrList.ifieldlist.keySet()) {
+            for (var f : things.ptrList.ifieldlist.get(a).keySet()) {
+                var aptr = things.ptrList.var2ptr(a);
+                var afptr = things.ptrList.ifield2ptr(a, f);
+                if (copyRel.obj.containsKey(aptr) && !copyRel.obj.containsKey(afptr)) {
+                    var set = new HashSet<Integer>();
+                    for (var bptr : copyRel.obj.get(aptr)) {
+                        if (!(things.ptrList.ptr(bptr) instanceof VarPtr))
+                            continue;
+                        var b = ((VarPtr) things.ptrList.ptr(bptr)).var;
+                        var bfptr = things.ptrList.ifield2ptr(b, f);
+                        if (bfptr != -1) {
+                            set.add(bfptr);
+                        }
+                    }
+                    copyRel.obj.put(afptr, set);
+                }
+
             }
         }
-        logger.info("{}{}", rep, newloc.tostr(ptrlist));
-        logger.info("{}=====[SPREAD NEW THROUGH COPY]=====", rep);
-        var outbbrel = rellist.get(cfg.size() - 1);
-        var clone = new CopyRel(outbbrel.obj);
-        while (!outbbrel.obj.isEmpty()) {
-            var kdel = new HashSet<Integer>();
-            for (var lhs : outbbrel.obj.keySet()) {
-                var vdel = new HashSet<Integer>();
-                for (var rhs : outbbrel.obj.get(lhs)) {
-                    logger.debug("[CHECK] {}:{} ?= {}:{}, ?{}",
-                            ptrlist.ptr2str(lhs), lhs, ptrlist.ptr2str(rhs), rhs,
-                            newloc.obj.containsKey(rhs));
-                    // For each `lhs = rhs`, and we know `rhs = new X`,
-                    // add `X` to `lhs`.
-                    if (newloc.obj.containsKey(rhs)) {
-                        var locset = newloc.obj.getOrDefault(lhs, new TreeSet<>());
-                        locset.addAll(newloc.obj.get(rhs));
-                        newloc.obj.put(lhs, locset);
-                        vdel.add(rhs);
+        // Spread through all ptr (iteratively)
+        var modified = true;
+        while (modified) {
+            modified = false;
+            for (var lhs : copyRel.obj.keySet()) {
+                var rhs = copyRel.obj.get(lhs);
+                var temp = new HashSet<Integer>();
+                for (var r : rhs) {
+                    if (copyRel.obj.containsKey(r)) {
+                        temp.addAll(copyRel.obj.get(r));
                     }
                 }
-                for (var vd : vdel) {
-                    logger.debug("[DEL] {} -> {}", ptrlist.ptr2str(lhs), ptrlist.ptr2str(vd));
-                }
-                // Delete updated in copyrel
-                outbbrel.obj.get(lhs).removeAll(vdel);
-                if (outbbrel.obj.get(lhs).isEmpty()) {
-                    kdel.add(lhs);
+                if (!rhs.containsAll(temp)) {
+                    rhs.addAll(temp);
+                    copyRel.obj.put(lhs, rhs);
+                    modified = true;
                 }
             }
-            kdel.forEach(k -> outbbrel.obj.remove(k));
         }
-        logger.info("{}{}", rep, newloc.tostr(ptrlist));
-        pts.merge(newloc);
-        return new VisitResult(clone, ptrlist);
+        return copyRel;
+    }
+
+    /**
+     * Convert a ptr in callee to the corresponding ptr in caller.
+     * Only care about the param-return passing. If the callee-ptr
+     * is none of param, return, %this or any field of these, return -1.
+     * If the ptr is not in the caller, add it to the ptrList.
+     */
+    public Integer ptr_Callee2Caller(
+            int ptr,
+            List<Var> args, Var tis, Var recv, MethodThings caller, MethodThings callee) {
+        if (ptr == -1)
+            return -1;
+        Ptr callee_ptr = callee.ptrList.ptr(ptr);
+        Var base = null;
+        JField field = null;
+        if (callee_ptr instanceof VarPtr) {
+            base = ((VarPtr) callee_ptr).var;
+        } else if (callee_ptr instanceof InstanceFieldPtr) {
+            base = ((InstanceFieldPtr) callee_ptr).base;
+            field = ((InstanceFieldPtr) callee_ptr).field;
+        } else if (callee_ptr instanceof StaticFieldPtr) {
+            field = ((StaticFieldPtr) callee_ptr).field;
+        }
+        // Find if base exist
+        Var caller_base = null;
+        int caller_base_ptr = -1;
+        if (callee.ir.isParam(base)) {
+            int id = callee.paramID.get(callee.ptrList.var2ptr(base));
+            caller_base = args.get(id);
+            caller_base_ptr = caller.ptrList.var2ptr(caller_base);
+        } else if (callee.ir.isThisOrParam(base)) {
+            caller_base = tis;
+            caller_base_ptr = tis != null ? caller.ptrList.var2ptr(tis) : -1;
+        } else if (callee.returns.contains(base)) {
+            caller_base = recv;
+            caller_base_ptr = recv != null ? caller.ptrList.var2ptr(recv) : -1;
+        }
+        // return
+        if (caller_base_ptr == -1 && field == null) {
+            return -1;
+        } else if (caller_base_ptr == -1) /* Static field */ {
+            int sf = caller.ptrList.sfield2ptr(field);
+            if (sf == -1) {
+                caller.ptrList.ptrlist.add(new StaticFieldPtr(field));
+                sf = caller.ptrList.ptrlist.size() - 1;
+                caller.ptrList.sfieldlist.put(field, sf);
+            }
+            return sf;
+        } else if (field == null) /* Var */ {
+            return caller_base_ptr;
+        } else /* Instance field */ {
+            var fields = caller.ptrList.ifieldlist.getOrDefault(caller_base, new HashMap<>());
+            int ifield = fields.getOrDefault(field, -1);
+            if (ifield == -1) {
+                caller.ptrList.ptrlist.add(new InstanceFieldPtr(caller_base, field));
+                ifield = caller.ptrList.ptrlist.size() - 1;
+                fields.put(field, ifield);
+                caller.ptrList.ifieldlist.put(caller_base, fields);
+            }
+            return ifield;
+        }
+    }
+
+    /**
+     * Return a CopyRel of the param, return, %this and any field of these.
+     * This is used for caller to understand the callee without recursivly invoke.
+     */
+    public CopyRel understandSumup(
+            List<Var> args, Var tis, Var recv, MethodThings caller, MethodThings callee) {
+        var copy = new CopyRel();
+        var callee_sumup = callee.sumup;
+        for (var lhs : callee_sumup.obj.keySet()) {
+            var lhs_caller = ptr_Callee2Caller(lhs, args, tis, recv, caller, callee);
+            if (lhs_caller == -1)
+                continue;
+            for (var r : callee_sumup.obj.get(lhs)) {
+                var r_caller = ptr_Callee2Caller(r, args, tis, recv, caller, callee);
+                if (r_caller == -1)
+                    continue;
+                var set = copy.obj.getOrDefault(lhs_caller, new HashSet<>());
+                set.add(r_caller);
+                copy.obj.put(lhs_caller, set);
+            }
+        }
+        return copy;
     }
 
     private final PtrList getPtrList(IR ir) {
@@ -192,12 +646,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         var ptrlist = new PtrList();
         ir.getVars().forEach(varlist::add);
         ir.getParams().forEach(varlist::add);
-
         var cnt = 0;
         for (var v : varlist) {
+            if (v.isConst())
+                continue;
             ptrlist.ptrlist.add(new VarPtr(v));
             ptrlist.varlist.put(v, cnt++);
         }
+
         for (var stmt : ir.getStmts()) {
             if ((stmt instanceof LoadField) || (stmt instanceof StoreField)) {
                 FieldAccess fa = null;
@@ -233,146 +689,6 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             }
         }
         return ptrlist;
-    }
-
-    private final CopyRel getBBCopyRel(PtrList ptrlist, IR ir, BasicBlock bb, int level) {
-        var copyRel = new CopyRel();
-        var rep = " ".repeat(level);
-        for (var i = bb.from; i <= bb.to; i++) {
-            var stmt = ir.getStmt(i);
-            if (stmt instanceof Copy) {
-                var copy = (Copy) stmt;
-                var lhs = ptrlist.var2ptr(copy.getLValue());
-                var rhs = ptrlist.var2ptr(copy.getRValue());
-                // overwrite the relationship on serialized control flow
-                copyRel.obj.put(lhs, new HashSet<>());
-                copyRel.obj.get(lhs).add(rhs);
-            }
-            if (stmt instanceof LoadField) {
-                var load = (LoadField) stmt;
-                var lhs = ptrlist.var2ptr(load.getLValue());
-                var rhs = ptrlist.faccess2ptr(load.getRValue());
-                copyRel.obj.put(lhs, new HashSet<>());
-                copyRel.obj.get(lhs).add(rhs);
-            }
-            if (stmt instanceof StoreField) {
-                var store = (StoreField) stmt;
-                var lhs = ptrlist.faccess2ptr(store.getLValue());
-                var rhs = ptrlist.var2ptr(store.getRValue());
-                copyRel.obj.put(lhs, new HashSet<>());
-                copyRel.obj.get(lhs).add(rhs);
-            }
-            if (stmt instanceof Invoke) {
-                // TODO
-            }
-        }
-        return copyRel;
-    }
-
-    /* ----------------------------- DATA STRUCTURES ---------------------------- */
-
-    private final class PtrList {
-        public final HashMap<Var, Integer> varlist = new HashMap<>();
-        public final HashMap<JField, Integer> sfieldlist = new HashMap<>();
-        public final HashMap<Var, HashMap<JField, Integer>> ifieldlist = new HashMap<>();
-        public final ArrayList<Ptr> ptrlist = new ArrayList<>();
-
-        public int var2ptr(Var var) {
-            if (varlist.containsKey(var)) {
-                return varlist.get(var);
-            } else {
-                return -1;
-            }
-        }
-
-        public int sfield2ptr(JField field) {
-            if (sfieldlist.containsKey(field)) {
-                return sfieldlist.get(field);
-            } else {
-                return -1;
-            }
-        }
-
-        public int faccess2ptr(FieldAccess fa) {
-            if (fa instanceof StaticFieldAccess) {
-                return sfield2ptr(((StaticFieldAccess) fa).getFieldRef().resolve());
-            } else {
-                var base = ((InstanceFieldAccess) fa).getBase();
-                var field = ((InstanceFieldAccess) fa).getFieldRef().resolve();
-                return ifield2ptr(base, field);
-            }
-        }
-
-        public int ifield2ptr(Var base, JField field) {
-            if (ifieldlist.containsKey(base) && ifieldlist.get(base).containsKey(field)) {
-                return ifieldlist.get(base).get(field);
-            } else {
-                return -1;
-            }
-        }
-
-        public String ptr2str(int i) {
-            return ptrlist.get(i).toString();
-        }
-    }
-
-    /**
-     * Location of `new` statements for each Ptr (indexed in PtrList)
-     */
-    private final class NewLoc {
-        public final HashMap<Integer, TreeSet<Integer>> obj = new HashMap<>();
-
-        public void merge(NewLoc a) {
-            a.obj.forEach((k, v) -> {
-                var set = obj.getOrDefault(k, new TreeSet<>());
-                set.addAll(v);
-                obj.put(k, set);
-            });
-        }
-
-        public String tostr(PtrList list) {
-            var s = "{";
-            for (var k : obj.keySet()) {
-                var v = obj.get(k);
-                s += list.ptr2str(k) + "=" + v.toString() + ", ";
-            }
-            return s + "}";
-        }
-    }
-
-    /**
-     * Copy relationship (a = b) for each Ptr (indexed in PtrList)
-     */
-    private final class CopyRel {
-        public final HashMap<Integer, HashSet<Integer>> obj = new HashMap<>();
-
-        public CopyRel() {
-        }
-
-        public CopyRel(HashMap<Integer, HashSet<Integer>> a) {
-            obj.putAll(a);
-        }
-
-        public void merge(CopyRel a) {
-            a.obj.forEach((k, v) -> {
-                var set = obj.getOrDefault(k, new HashSet<>());
-                set.addAll(v);
-                obj.put(k, set);
-            });
-        }
-
-        public String tostr(PtrList list) {
-            var s = "{";
-            for (var k : obj.keySet()) {
-                var v = obj.get(k);
-                s += list.ptr2str(k) + "=[";
-                for (var i : v) {
-                    s += list.ptr2str(i) + ", ";
-                }
-                s += "], ";
-            }
-            return s + "}";
-        }
     }
 
     /* ------------------------------ POINTER DEFS ------------------------------ */
@@ -522,6 +838,16 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
 
         public final int size() {
             return bbs.size();
+        }
+
+        @Override
+        public String toString() {
+            var s = "";
+            for (var i = 0; i < bbs.size(); i++) {
+                s += i + ": [" + bbs.get(i).from + "," + bbs.get(i).to
+                        + "] <- " + revEdges.get(i).toString() + "\n";
+            }
+            return s;
         }
     }
 
