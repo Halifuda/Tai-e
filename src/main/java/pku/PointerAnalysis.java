@@ -240,10 +240,10 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         // Analysis copy relationship
         sortMethods(main, 0);
         callOrder.forEach(this::analyzeMethod);
+        // TODO: we need a global PtrList to handle cross-method benchmark
         callOrder.forEach(this::calcNewloc);
-        callOrder.forEach(things -> collectTestResult(things, result));
         // Calculate for each test
-        // TODO
+        callOrder.forEach(things -> collectTestResult(things, result));
         // Trivial complement, avoid unsound
         var objs = new TreeSet<>(preprocess.obj_ids.values());
         preprocess.test_pts.forEach((test_id, pt) -> {
@@ -437,6 +437,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     if (isNonLocal(r, things)) {
                         set.add(r);
                     } else {
+                        // TODO: if benchmark is cross methods, may need change
+                        // TODO: means, non-local should include benchmark.alloc
                         set.add(-1);
                     }
                 }
@@ -471,8 +473,12 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 copy.obj.putAll(temp.obj);
             }
         }
-    }
 
+        // TODO: IN is not considered
+        // BB1: a = b IN
+        // BB2: a = c KILL, OUT
+    }
+    // We know all OUT
     public CopyRel analyzeBB(MethodThings things, BasicBlock bb) {
         var ir = things.ir;
         var ptrlist = things.ptrList;
@@ -489,8 +495,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     set.add(rhs);
                     copyRel.obj.put(lhs, set);
                 }
-
             }
+
             if (stmt instanceof LoadField) {
                 var load = (LoadField) stmt;
                 var lhs = ptrlist.var2ptr(load.getLValue());
@@ -515,16 +521,18 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 var callee = getThings(mth);
                 if (callee == null) {
                     // not sumup yet, ignore
+                    // TODO
                     continue;
                 }
+
                 var exp = invoke.getInvokeExp();
                 var args = exp.getArgs();
                 var recv = invoke.getLValue();
-                Var tis = null;
+                var tis = (Var) null;
                 if (exp instanceof InvokeInstanceExp) {
                     tis = ((InvokeInstanceExp) exp).getBase();
                 }
-                var sumup = understandSumup(args, tis, recv, things, callee);
+                CopyRel sumup = understandSumup(args, tis, recv, things, callee);
                 sumup.obj.forEach((lhs, rhs) -> {
                     // overwrite
                     copyRel.obj.put(lhs, rhs);
@@ -535,6 +543,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         // If (1) a.f, b.f are all Ptr; (2) a.f is not recorded in copyRel,
         // i.e., there is no Stmt overwrites it; (3) we know a = b,
         // then, we add a.f = b.f.
+        // TODO: here or after Copt Stmt?
         for (var a : things.ptrList.ifieldlist.keySet()) {
             for (var f : things.ptrList.ifieldlist.get(a).keySet()) {
                 var aptr = things.ptrList.var2ptr(a);
@@ -556,6 +565,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             }
         }
         // Spread through all ptr (iteratively)
+        // TODO: order? e.g., (a = b, b = c, a != c)
         var modified = true;
         while (modified) {
             modified = false;
@@ -630,6 +640,10 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             var fields = caller.ptrList.ifieldlist.getOrDefault(caller_base, new HashMap<>());
             int ifield = fields.getOrDefault(field, -1);
             if (ifield == -1) {
+                /*
+                 * if callee uses a.f, but caller doesnot use a.f explitly,
+                 * then we add a Ptr of a.f to caller's PtrList
+                 */
                 caller.ptrList.ptrlist.add(new InstanceFieldPtr(caller_base, field));
                 ifield = caller.ptrList.ptrlist.size() - 1;
                 fields.put(field, ifield);
