@@ -31,6 +31,46 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         super(config);
     }
 
+    public static PtrList ptrList;
+    public static NewLoc newLoc;
+    
+    public class PtrID extends Integer {
+        public PtrID() {
+            super();
+        }
+    }
+
+    public class PtrCopy {
+        public PtrID lval;
+        public PtrID rval;
+    }
+
+    public class BB {
+        public List<PtrCopy> ir;
+        public NewLoc out;
+
+        public BB(IR ir, int from, int to) {
+        }
+
+        public List<BB> invoke(LValue reciever, Var tis, RValue invokeExp) {
+        }
+
+        private List<PtrID> kill() {}
+
+        public NewLoc calcOut(List<NewLoc> in) {}
+        
+        
+    }
+
+    public class CFG {
+        public List<BB> bbs;
+        public Map<Integer, List<Integer>> edges;
+        public Map<Integer, List<Integer>> revEdges;
+
+        public CFG(JMethod main) {
+        }
+    }
+
     // CONTENTS: (see readme-ayd.md)
     // - DATA STRUCTURES: helpers for analysis
     // - - MethodThings: method info
@@ -166,6 +206,15 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
      */
     private final class CopyRel {
         // Map<Ptr-ID-in-PtrList, Set<Ptr-ID-in-PtrList>>
+        public final class Pair {
+            public Integer first;
+            public Integer second;
+        }
+
+        public List<Pair> copies; // 1:a=b, 2:a=c, 3:a=d, 4:d=e
+        public Map<Ptr, HashSet<Integer>> copies_of_ptr; // a:[3], d:[4]
+
+        public TreeSet<Stmt> a;
         public final HashMap<Integer, HashSet<Integer>> obj = new HashMap<>();
 
         public CopyRel() {
@@ -201,7 +250,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
      * Location of `new` statements for each Ptr (indexed in PtrList)
      */
     private final class NewLoc {
-        public final HashMap<Integer, TreeSet<Integer>> obj = new HashMap<>();
+        public final HashMap<PtrID, TreeSet<Integer>> obj = new HashMap<>();
 
         public void merge(NewLoc a) {
             a.obj.forEach((k, v) -> {
