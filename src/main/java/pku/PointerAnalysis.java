@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -52,13 +53,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
 
     private final class PtrList {
         public final HashMap<Var, PtrID> varlist = new HashMap<>();
-        public final HashMap<JField, PtrID> sfieldlist = new HashMap<>(); 
+        public final HashMap<JField, PtrID> sfieldlist = new HashMap<>();
         public final HashMap<Var, HashMap<JField, PtrID>> ifieldlist = new HashMap<>();
         public final ArrayList<Ptr> ptrlist = new ArrayList<>();
 
         public Ptr ptr(PtrID id) {
             return ptrlist.get(id.i);
-        } 
+        }
 
         public PtrID var2ptr(Var var) {
             if (varlist.containsKey(var)) {
@@ -66,7 +67,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             } else {
                 return null;
             }
-        } 
+        }
 
         public PtrID sfield2ptr(JField field) {
             if (sfieldlist.containsKey(field)) {
@@ -135,14 +136,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         }
     }
 
-    private final void initGlbPtrList(IR ir) { 
+    private final void initGlbPtrList(IR ir) {
         for (var v : ir.getVars()) {
             glbPtrList.addVar(v);
         }
-        for (var v : ir.getParams()) { 
+        for (var v : ir.getParams()) {
             glbPtrList.addVar(v);
         }
-        if (ir.getThis() != null) { 
+        if (ir.getThis() != null) {
             glbPtrList.addVar(ir.getThis());
         }
         for (var stmt : ir.getStmts()) {
@@ -238,6 +239,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     private class BB {
         public ArrayList<PtrCopy> ir;
         public NewLoc out;
+        public Optional<Integer> benchmarkTest = Optional.empty();
 
         public BB() {
             this.ir = new ArrayList<>();
@@ -248,19 +250,29 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             this.ir = new ArrayList<>();
             for (var i = from; i <= to; i++) {
                 var stmt = ir.getStmts().get(i);
+                if (stmt instanceof Invoke) {
+                    Invoke invoke = (Invoke) stmt;
+                    if (isBenchmarkTest(invoke)) {
+                        var exp = invoke.getInvokeExp();
+                        var lit = exp.getArg(0).getConstValue();
+                        assert lit instanceof IntLiteral;
+                        var test_id = ((IntLiteral) lit).getNumber();
+                        benchmarkTest = Optional.of(test_id);
+                    }
+                }
                 var copy = PtrCopyFromStmt(stmt, caller_recv);
                 if (copy != null) {
                     this.ir.add(copy);
                     // handle implicit field sensitivity
                     // now assert only objects of same class will have copyrel
-                    if (stmt instanceof Copy){
-                        var lvar = ((Copy)stmt).getLValue();
-                        var rvar = ((Copy)stmt).getRValue();
-                        if (glbPtrList.ifieldlist.containsKey(lvar) && glbPtrList.ifieldlist.containsKey(rvar)){
+                    if (stmt instanceof Copy) {
+                        var lvar = ((Copy) stmt).getLValue();
+                        var rvar = ((Copy) stmt).getRValue();
+                        if (glbPtrList.ifieldlist.containsKey(lvar) && glbPtrList.ifieldlist.containsKey(rvar)) {
                             var lfields = glbPtrList.ifieldlist.get(lvar);
                             var rfields = glbPtrList.ifieldlist.get(rvar);
-                            for (var key: rfields.keySet()){
-                                if (!(lfields.containsKey((key)))){
+                            for (var key : rfields.keySet()) {
+                                if (!(lfields.containsKey((key)))) {
                                     glbPtrList.addIField(rvar, key);
                                 }
                                 this.ir.add(new PtrCopy(lfields.get(key), rfields.get(key)));
@@ -279,7 +291,6 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             }
             return killed;
         }
-        
 
         public NewLoc calcOut(List<NewLoc> in) {
             NewLoc outState = new NewLoc();
@@ -397,7 +408,15 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         var ir = method.getIR();
         var ircfg = allMethods.get(method);
         var basecnt = glbCFG.bbs.size();
-        ircfg.bbs.forEach(bb -> glbCFG.bbs.add(new BB(ir, bb.from, bb.to, caller_recv)));
+        for (int i = 0; i < ircfg.bbs.size(); i++) {
+            var irbb = ircfg.bbs.get(i);
+            var bb = new BB(ir, irbb.from, irbb.to, caller_recv);
+            glbCFG.bbs.add(bb);
+            if (bb.benchmarkTest.isPresent()) {
+                Integer test_id = bb.benchmarkTest.get();
+                glbTestid2BBindex.put(test_id, Integer.valueOf(basecnt + i));
+            }
+        }
         entry_exits.add(basecnt + ircfg.entry);
 
         for (var i = 0; i < ircfg.size(); i++) {
@@ -471,6 +490,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     private final class NewLoc {
         public final HashMap<PtrID, TreeSet<Integer>> obj = new HashMap<>();
 
+        @Override
+        public boolean equals(Object obj) {
+            if (obj instanceof NewLoc)
+                return this.obj.equals(((NewLoc) obj).obj);
+            return false;
+        }
+
         public void merge(NewLoc a) {
             a.obj.forEach((k, v) -> {
                 var set = obj.getOrDefault(k, new TreeSet<>());
@@ -521,6 +547,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     private final HashMap<JMethod, IRCFG> allMethods = new HashMap<>();
     private final PtrList glbPtrList = new PtrList();
     private final CFG glbCFG = new CFG();
+    private final Map<Integer, Integer> glbTestid2BBindex = new TreeMap<>();
 
     /* -------------------------------- ANALYZER -------------------------------- */
 
@@ -545,37 +572,30 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             });
         });
         // TODO: Init
+        // Build Ptr List
         allMethods.keySet().forEach(method -> initGlbPtrList(method.getIR()));
         logger.info("PtrList:\n{}", glbPtrList.toString());
+
+        // Build global CFG
         var glbEntryExits = buildCFGEdges(main, null, 0);
         completeGLbCFG(glbEntryExits);
         logger.info("CFG:\n{}", glbCFG.toString());
+        logger.info("glbTestid2BBindex: {}", glbTestid2BBindex);
+
+        // Build global new locations
         var entry_in = getInitNewLoc();
         logger.info("Init NewLoc:\n{}", entry_in.tostr(glbPtrList));
-        // TODO: dataflow analysis, need to revise
-        // boolean changed;
-        // do {
-        //     changed = false;
-        //     for (int bbIndex = 0; bbIndex < glbCFG.bbs.size(); bbIndex++) {
-        //         BB bb = glbCFG.bbs.get(bbIndex);
 
-        //         NewLoc inState = new NewLoc();
-        //         TreeSet<Integer> predIndexes = glbCFG.revEdges.get(bbIndex);
-        //         if (predIndexes != null) {
-        //             for (Integer predIndex : predIndexes) {
-        //                 BB predBB = glbCFG.bbs.get(predIndex);
-        //                 inState.merge(predBB.out);
-        //             }
-        //         }
+        // Dataflow analyze pointers.
+        dataflowAnalyze();
 
-        //         NewLoc outState = bb.calcOut(Collections.singletonList(inState));
-
-        //         if (!outState.equals(bb.out)) {
-        //             bb.out = outState;
-        //             changed = true;
-        //         }
-        //     }
-        // } while (changed);
+        // Record results.
+        glbTestid2BBindex.forEach((test_id, bb_id) -> {
+            NewLoc out = glbCFG.bbs.get(bb_id).out;
+            Var v = preprocess.test_pts.get(test_id);
+            PtrID ptrid = glbPtrList.var2ptr(v);
+            result.put(test_id, out.obj.get(ptrid));
+        });
 
         // Trivial complement, avoid unsound
         var objs = new TreeSet<>(preprocess.obj_ids.values());
@@ -586,6 +606,34 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         });
         dump(result);
         return result;
+    }
+
+    private void dataflowAnalyze() {
+        // TODO: dataflow analysis, need to revise
+        boolean changed;
+        do {
+            changed = false;
+            for (int bbIndex = 0; bbIndex < glbCFG.bbs.size(); bbIndex++) {
+                BB bb = glbCFG.bbs.get(bbIndex);
+
+                NewLoc inState = new NewLoc();
+                TreeSet<Integer> predIndexes = glbCFG.revEdges.get(bbIndex);
+                if (predIndexes != null) {
+                    for (Integer predIndex : predIndexes) {
+                        BB predBB = glbCFG.bbs.get(predIndex);
+                        inState.merge(predBB.out);
+                    }
+                }
+
+                NewLoc outState = bb.calcOut(Collections.singletonList(inState));
+
+                if (!outState.equals(bb.out)) {
+                    logger.info("BB {}'s out expand. changed=true. New loc: ", bbIndex, outState.tostr(glbPtrList));
+                    bb.out = outState;
+                    changed = true;
+                }
+            }
+        } while (changed);
     }
 
     /* ------------------------------ POINTER DEFS ------------------------------ */
@@ -693,6 +741,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         public final List<Set<Integer>> edges;
         public final List<Set<Integer>> revEdges;
 
+        // ! Build an IRCFG from a method's IR.
         public IRCFG(IR ir) {
             bbs = getIRBBs(ir);
             entry = 0;
@@ -784,6 +833,22 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         }
     }
 
+    private boolean isBenchmarkInvoke(Invoke invoke) {
+        var className = invoke.getInvokeExp().getMethodRef().getDeclaringClass().getName();
+        return className.equals("benchmark.internal.Benchmark") ||
+                className.equals("benchmark.internal.BenchmarkN");
+    }
+
+    private boolean isBenchmarkAlloc(Invoke invoke) {
+        var mthName = invoke.getInvokeExp().getMethodRef().getName();
+        return isBenchmarkInvoke(invoke) && mthName.equals("alloc");
+    }
+
+    private boolean isBenchmarkTest(Invoke invoke) {
+        var mthName = invoke.getInvokeExp().getMethodRef().getName();
+        return isBenchmarkInvoke(invoke) && mthName.equals("test");
+    }
+
     private final List<IRBB> getIRBBs(IR ir) {
         // unique
         var starter = new TreeSet<Integer>();
@@ -802,11 +867,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 var targets = ((JumpStmt) stmt).getTargets();
                 targets.forEach(t -> starter.add(t.getIndex()));
             } else if (stmt instanceof Invoke) {
-                var className = ((Invoke) stmt).getInvokeExp().getMethodRef().getDeclaringClass().getName();
-                var mthName = ((Invoke) stmt).getInvokeExp().getMethodRef().getName();
-                if ((className.equals("benchmark.internal.Benchmark") ||
-                        className.equals("benchmark.internal.BenchmarkN"))
-                        && mthName.equals("alloc")) {
+                if (isBenchmarkAlloc((Invoke) stmt)) {
                     // benchmark.alloc will not add starter
                     continue;
                 }
