@@ -57,6 +57,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         public final HashMap<Var, HashMap<JField, PtrID>> ifieldlist = new HashMap<>();
         public final ArrayList<Ptr> ptrlist = new ArrayList<>();
 
+        public Optional<Var> id2var(PtrID id) {
+            Ptr ptr = ptrlist.get(id.i);
+            if (ptr instanceof VarPtr) {
+                return Optional.of(((VarPtr) ptr).var);
+            }
+            return Optional.empty();
+        }
+
         public Ptr ptr(PtrID id) {
             return ptrlist.get(id.i);
         }
@@ -292,6 +300,20 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             return killed;
         }
 
+        private void updateLvalStateRecursively(PtrID lval, TreeSet<Integer> state, NewLoc outState) {
+            outState.obj.put(lval, new TreeSet<>(state));
+
+            Optional<Var> v = glbPtrList.id2var(lval);
+            if (v.isPresent()) {
+                var m = glbPtrList.ifieldlist.get(v.get());
+                if (m != null) {
+                    m.forEach((jfield, id) -> {
+                        outState.obj.put(id, state);
+                    });
+                }
+            }
+        }
+
         public NewLoc calcOut(List<NewLoc> in) {
             NewLoc outState = new NewLoc();
             outState.merge(initial);
@@ -300,7 +322,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 outState.merge(state);
             }
 
-            logger.info("Input: {}", outState.tostr(glbPtrList));
+            // logger.info("Input: {}", outState.tostr(glbPtrList));
 
             // kill
             List<PtrID> killed = kill();
@@ -310,7 +332,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             for (PtrCopy copy : this.ir) {
                 if (copy.isValid()) {
                     TreeSet<Integer> rvalState = outState.obj.getOrDefault(copy.rval, new TreeSet<>());
-                    outState.obj.put(copy.lval, new TreeSet<>(rvalState));
+
+                    updateLvalStateRecursively(copy.lval, rvalState, outState);
                 }
             }
             return outState;
@@ -638,7 +661,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 NewLoc outState = bb.calcOut(Collections.singletonList(inState));
 
                 if (!outState.equals(bb.out)) {
-                    logger.info("BB {}'s out expand. changed=true. New loc: ", bbIndex, outState.tostr(glbPtrList));
+                    logger.info("BB {}'s out expand. changed=true. New loc: {}", bbIndex, outState.tostr(glbPtrList));
                     bb.out = outState;
                     changed = true;
                 }

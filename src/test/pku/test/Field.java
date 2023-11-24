@@ -14,36 +14,22 @@ import benchmark.objects.B;
  * 
  * @description Field Sensitivity without static method
  */
-public class FieldSensitivity {
+public class Field {
 
-  public FieldSensitivity() {}
-
-  private void assign(A x, A y) {
-    y.f = x.f;
-  }
+  public Field() {}
 
   private void test() {	  
     Benchmark.alloc(1);
     B b = new B();
     Benchmark.alloc(2);
     A a = new A(b);
-    Benchmark.alloc(3);
-    A c = new A();
-    Benchmark.alloc(4);
-    B e = new B();
-    assign(a, c);
-    B d = c.f;
 
-    Benchmark.test(1, d); // expected: 1
-    Benchmark.test(2, c.f); // expected: 1
-    Benchmark.test(3, a.f); // expected: 1
-    Benchmark.test(4, a); // expected: 2
+    Benchmark.test(1, a.f); // expected: 1
+    Benchmark.test(2, a);   // expected: 2
   }
 
   public static void main(String[] args) {
-
-    FieldSensitivity fs2 = new FieldSensitivity();
-    fs2.test();
+    Field fs = new Field();
+    fs.test();
   }
-
 }
