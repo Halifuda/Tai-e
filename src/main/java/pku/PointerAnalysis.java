@@ -294,12 +294,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
 
         public NewLoc calcOut(List<NewLoc> in) {
             NewLoc outState = new NewLoc();
+            outState.merge(initial);
             // merge all in
             for (NewLoc state : in) {
                 outState.merge(state);
             }
 
-            logger.info("{}", outState.tostr(glbPtrList));
+            logger.info("Input: {}", outState.tostr(glbPtrList));
 
             // kill
             List<PtrID> killed = kill();
@@ -548,6 +549,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     private final PtrList glbPtrList = new PtrList();
     private final CFG glbCFG = new CFG();
     private final Map<Integer, Integer> glbTestid2BBindex = new TreeMap<>();
+    private final NewLoc initial = new NewLoc();
 
     /* -------------------------------- ANALYZER -------------------------------- */
 
@@ -583,11 +585,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         logger.info("glbTestid2BBindex: {}", glbTestid2BBindex);
 
         // Build global new locations
-        var entry_in = getInitNewLoc();
-        logger.info("Init NewLoc:\n{}", entry_in.tostr(glbPtrList));
+        initial.merge(getInitNewLoc());
+        logger.info("Init NewLoc:\n{}", initial.tostr(glbPtrList));
 
         // Dataflow analyze pointers.
-        dataflowAnalyze(entry_in);
+        dataflowAnalyze();
 
         // Record results.
         glbTestid2BBindex.forEach((test_id, bb_id) -> {
@@ -600,7 +602,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         // Trivial complement, avoid unsound
         var objs = new TreeSet<>(preprocess.obj_ids.values());
         preprocess.test_pts.forEach((test_id, pt) -> {
-            if (!result.containsKey(test_id) || result.get(test_id).isEmpty()) {
+            if (result.get(test_id) == null || result.get(test_id).isEmpty()) {
                 result.put(test_id, objs);
             }
         });
@@ -608,13 +610,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         return result;
     }
 
-    private void dataflowAnalyze(NewLoc entry_in) {
+    private void dataflowAnalyze() {
         // TODO: dataflow analysis, need to revise
 
         // TODO: Check initialization correctness.
         // Initial state: entry - entry_in, other: bottom
         for (BB bb : glbCFG.bbs) {
-            bb.out = entry_in;
+            bb.out = initial;
         }
 
         // Iterate until converge.
