@@ -26,6 +26,16 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         super(config);
     }
 
+    /*
+     * Contents:
+     * 1. Data Structures
+     * 2. Global Variables
+     * 3. Analyzer
+     * 4. Pointer Defs
+     */
+
+    /* ----------------------------- DATA STRUCTURES ---------------------------- */
+
     private class PtrID {
         public int i;
 
@@ -239,6 +249,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 var stmt = ir.getStmts().get(i);
                 var copy = PtrCopyFromStmt(stmt, caller_recv);
                 if (copy != null) {
+                    // TODO: handle implicit field sensitivity
+                    // For example: `a = b` => `a.f = b.f`
                     this.ir.add(copy);
                 }
             }
@@ -291,14 +303,27 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             call.ir.add(new PtrCopy(tis, instance));
         }
         if (recv != null && rets.size() > 0) {
-            // NOTE: multiple return value is handled by
-            // `Return` stmt. For example:
+            // NOTE: return value is handled by `Return` stmt.
+            // For example:
             // if `BB1 -> BB2(return x)`, `BB1 -> BB3(return y)`
             // we, being aware of `caller_recv`, add
             // `caller_recv = x` to `BB2` and
             // `caller_recv = y` to `BB3`.
             // Then, add `BB2 -> ret` and `BB3 -> ret`.
-            // So `BB ret` need not to have any `PtrCopy`.
+            // So `ret` only handles this and params.
+
+            // Back propagate the relationship.
+            // For example: in `call` we add `x = a`, then in
+            // `ret` we add `a = x`. So, if `a` is somehow
+            // changed in callee, we can detect it in caller.
+            for (int i = 0; i < args.size(); i++) {
+                var arg = args.get(i);
+                var param = params.get(i);
+                ret.ir.add(new PtrCopy(arg, param));
+            }
+            if (instance != null && tis != null) {
+                call.ir.add(new PtrCopy(instance, tis));
+            }
         }
 
         return List.of(call, ret);
@@ -328,8 +353,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     }
 
     // List: entry, [exit1, exit2, ...]
-    // Only build edges
-    private List<Integer> buildCFGEdges(JMethod method, PtrID caller_recv) {
+    // This method only build edges
+    private List<Integer> buildCFGEdges(JMethod method, PtrID caller_recv, int level) {
+        if (level > maxLevel) {
+            return new ArrayList<>();
+        }
         var entry_exits = new ArrayList<Integer>();
         var ir = method.getIR();
         var ircfg = allMethods.get(method);
@@ -344,7 +372,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     var invoke = (Invoke) ir.getStmt(ircfg.bbs.get(i).to);
                     var recv = glbPtrList.var2ptr(invoke.getLValue());
 
-                    var callee_bbs = buildCFGEdges(mth, recv);
+                    var callee_bbs = buildCFGEdges(mth, recv, level + 1);
                     var callee_entry = callee_bbs.get(0);
                     var callee_exits = callee_bbs.subList(1, callee_bbs.size());
                     glbCFG.bbs.addAll(BBsFromInvoke(invoke));
@@ -364,6 +392,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                         glbCFG.edges.put(j, set2);
                     }
                     // others -> this, remain unchanged
+                    {
+                    }
                     // this -> others => ret -> others
                     for (var j : ircfg.edges.get(i)) {
                         var set2 = glbCFG.edges.getOrDefault(ret, new TreeSet<>());
@@ -388,6 +418,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         return entry_exits;
     }
 
+    // This method build revEdges, entry, exits
     private void completeGLbCFG(List<Integer> entry_exits) {
         // rev edges
         for (var i : glbCFG.edges.keySet()) {
@@ -402,9 +433,6 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         glbCFG.exits.addAll(entry_exits.subList(1, entry_exits.size()));
     }
 
-    /**
-     * Location of `new` statements for each Ptr (indexed in PtrList)
-     */
     private final class NewLoc {
         public final HashMap<PtrID, TreeSet<Integer>> obj = new HashMap<>();
 
@@ -445,8 +473,9 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             }
         }
         return result;
-
     }
+
+    /* ---------------------------- GLOBAL VARIABLES ---------------------------- */
 
     public static final String ID = "pku-pta";
     private static final Logger logger = LogManager.getLogger(IRDumper.class);
@@ -483,11 +512,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         // TODO: Init
         allMethods.keySet().forEach(method -> initGlbPtrList(method.getIR()));
         logger.info("PtrList:\n{}", glbPtrList.toString());
-        var glbEntryExits = buildCFGEdges(main, null);
+        var glbEntryExits = buildCFGEdges(main, null, 0);
         completeGLbCFG(glbEntryExits);
         logger.info("CFG:\n{}", glbCFG.toString());
-        var entry_out = getInitNewLoc();
-        logger.info("Init NewLoc:\n{}", entry_out.tostr(glbPtrList));
+        var entry_in = getInitNewLoc();
+        logger.info("Init NewLoc:\n{}", entry_in.tostr(glbPtrList));
         // TODO: Analysis
         // Trivial complement, avoid unsound
         var objs = new TreeSet<>(preprocess.obj_ids.values());
