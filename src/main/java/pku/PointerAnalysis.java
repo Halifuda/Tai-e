@@ -50,14 +50,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
     }
 
     private final class PtrList {
-        public final HashMap<Var, PtrID> varlist = new HashMap<>();
-        public final HashMap<JField, PtrID> sfieldlist = new HashMap<>();
-        public final HashMap<Var, HashMap<JField, PtrID>> ifieldlist = new HashMap<>();
+        public final HashMap<Var, PtrID> varlist = new HashMap<>(); // var to ptrid
+        public final HashMap<JField, PtrID> sfieldlist = new HashMap<>(); // static to ptrid
+        public final HashMap<Var, HashMap<JField, PtrID>> ifieldlist = new HashMap<>(); // instance to ptrid
         public final ArrayList<Ptr> ptrlist = new ArrayList<>();
 
         public Ptr ptr(PtrID id) {
             return ptrlist.get(id.i);
-        }
+        } // give ptrid, return ptr
 
         public PtrID var2ptr(Var var) {
             if (varlist.containsKey(var)) {
@@ -65,7 +65,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             } else {
                 return null;
             }
-        }
+        } // give var, return ptrID
 
         public PtrID sfield2ptr(JField field) {
             if (sfieldlist.containsKey(field)) {
@@ -134,14 +134,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         }
     }
 
-    private final void initGlbPtrList(IR ir) {
+    private final void initGlbPtrList(IR ir) { // 初始化全局指针列表
         for (var v : ir.getVars()) {
             glbPtrList.addVar(v);
         }
-        for (var v : ir.getParams()) {
+        for (var v : ir.getParams()) { // 参数也放进去
             glbPtrList.addVar(v);
         }
-        if (ir.getThis() != null) {
+        if (ir.getThis() != null) { // 类的实例变量
             glbPtrList.addVar(ir.getThis());
         }
         for (var stmt : ir.getStmts()) {
@@ -249,22 +249,57 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 var stmt = ir.getStmts().get(i);
                 var copy = PtrCopyFromStmt(stmt, caller_recv);
                 if (copy != null) {
-                    // TODO: handle implicit field sensitivity
-                    // For example: `a = b` => `a.f = b.f`
                     this.ir.add(copy);
+                    // handle implicit field sensitivity
+                    // now assert only objects of same class will have copyrel
+                    if (stmt instanceof Copy){
+                        var lvar = ((Copy)stmt).getLValue();
+                        var rvar = ((Copy)stmt).getRValue();
+                        if (glbPtrList.ifieldlist.containsKey(lvar) && glbPtrList.ifieldlist.containsKey(rvar)){
+                            var lfields = glbPtrList.ifieldlist.get(lvar);
+                            var rfields = glbPtrList.ifieldlist.get(rvar);
+                            for (var key: rfields.keySet()){
+                                if (!(lfields.containsKey((key)))){
+                                    glbPtrList.addIField(rvar, key);
+                                }
+                                this.ir.add(new PtrCopy(lfields.get(key), rfields.get(key)));
+                            }
+                        }
+                    }
                 }
             }
             this.out = new NewLoc();
         }
 
         private List<PtrID> kill() {
-            // TODO
-            return null;
+            List<PtrID> killed = new ArrayList<>();
+            for (PtrCopy copy : this.ir) {
+                killed.add(copy.lval);
+            }
+            return killed;
         }
+        
 
         public NewLoc calcOut(List<NewLoc> in) {
-            // TODO
-            return null;
+            NewLoc outState = new NewLoc();
+            // merge all in
+            for (NewLoc state : in) {
+                outState.merge(state);
+            }
+
+            // kill
+            List<PtrID> killed = kill();
+            killed.forEach(outState.obj::remove);
+
+            // transfer
+            for (PtrCopy copy : this.ir) {
+                if (copy.isValid()) {
+                    TreeSet<Integer> rvalState = outState.obj.getOrDefault(copy.rval, new TreeSet<>());
+                    outState.obj.put(copy.lval, new TreeSet<>(rvalState));
+                }
+            }
+            this.out = outState;
+            return outState;
         }
 
         @Override
