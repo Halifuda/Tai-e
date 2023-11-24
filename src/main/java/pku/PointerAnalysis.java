@@ -299,6 +299,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 outState.merge(state);
             }
 
+            logger.info("{}", outState.tostr(glbPtrList));
+
             // kill
             List<PtrID> killed = kill();
             killed.forEach(outState.obj::remove);
@@ -517,22 +519,20 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
 
     private NewLoc getInitNewLoc() {
         var result = new NewLoc();
-        for (var mth : allMethods.keySet()) {
-            var ir = mth.getIR();
-            for (var stmt : ir.getStmts()) {
-                if (stmt instanceof New) {
-                    var id = preprocess.obj_ids.get(stmt);
-                    if (id != null) {
-                        var ptr = glbPtrList.var2ptr(((New) stmt).getLValue());
-                        if (ptr != null) {
-                            var set = result.obj.getOrDefault(ptr, new TreeSet<>());
-                            set.add(id);
-                            result.obj.put(ptr, set);
-                        }
+        allMethods.keySet().stream().map(JMethod::getIR).map(IR::getStmts).forEach(stmts -> {
+            stmts.stream().filter(stmt -> stmt instanceof New).forEach(stmt -> {
+                Integer id = preprocess.obj_ids.get(stmt);
+                if (id != null) {
+                    Var variable = ((New) stmt).getLValue();
+                    var ptr = glbPtrList.var2ptr(variable);
+                    if (ptr != null) {
+                        var set = result.obj.getOrDefault(ptr, new TreeSet<>());
+                        set.add(id);
+                        result.obj.put(ptr, set);
                     }
                 }
-            }
-        }
+            });
+        });
         return result;
     }
 
@@ -587,7 +587,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         logger.info("Init NewLoc:\n{}", entry_in.tostr(glbPtrList));
 
         // Dataflow analyze pointers.
-        dataflowAnalyze();
+        dataflowAnalyze(entry_in);
 
         // Record results.
         glbTestid2BBindex.forEach((test_id, bb_id) -> {
@@ -608,10 +608,18 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         return result;
     }
 
-    private void dataflowAnalyze() {
+    private void dataflowAnalyze(NewLoc entry_in) {
         // TODO: dataflow analysis, need to revise
-        boolean changed;
-        do {
+
+        // TODO: Check initialization correctness.
+        // Initial state: entry - entry_in, other: bottom
+        for (BB bb : glbCFG.bbs) {
+            bb.out = entry_in;
+        }
+
+        // Iterate until converge.
+        boolean changed = true;
+        while (changed) {
             changed = false;
             for (int bbIndex = 0; bbIndex < glbCFG.bbs.size(); bbIndex++) {
                 BB bb = glbCFG.bbs.get(bbIndex);
@@ -633,7 +641,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     changed = true;
                 }
             }
-        } while (changed);
+        }
     }
 
     /* ------------------------------ POINTER DEFS ------------------------------ */
