@@ -158,6 +158,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         public PtrID lval;
         public PtrID rval;
 
+        public PtrCopy(PtrID lval, PtrID rval) {
+            this.lval = lval;
+            this.rval = rval;
+        }
+
         public PtrCopy(Var lval, Var rval) {
             this.lval = glbPtrList.var2ptr(lval);
             this.rval = glbPtrList.var2ptr(rval);
@@ -198,7 +203,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         }
     }
 
-    private PtrCopy PtrCopyFromStmt(Stmt stmt) {
+    private PtrCopy PtrCopyFromStmt(Stmt stmt, PtrID caller_recv) {
         PtrCopy result = null;
         if (stmt instanceof Copy) {
             result = new PtrCopy((Copy) stmt);
@@ -206,6 +211,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             result = new PtrCopy((StoreField) stmt);
         } else if (stmt instanceof LoadField) {
             result = new PtrCopy((LoadField) stmt);
+        } else if (stmt instanceof Return) {
+            var ret = (Return) stmt;
+            if (ret.getValue() != null && caller_recv != null) {
+                result = new PtrCopy(caller_recv, glbPtrList.var2ptr(ret.getValue()));
+            }
         }
         if (result != null && result.lval != null) {
             return result;
@@ -223,11 +233,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             this.out = new NewLoc();
         }
 
-        public BB(IR ir, int from, int to) {
+        public BB(IR ir, int from, int to, PtrID caller_recv) {
             this.ir = new ArrayList<>();
             for (var i = from; i <= to; i++) {
                 var stmt = ir.getStmts().get(i);
-                var copy = PtrCopyFromStmt(stmt);
+                var copy = PtrCopyFromStmt(stmt, caller_recv);
                 if (copy != null) {
                     this.ir.add(copy);
                 }
@@ -281,8 +291,14 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             call.ir.add(new PtrCopy(tis, instance));
         }
         if (recv != null && rets.size() > 0) {
-            // TODO: how to handle multiple return values?
-            ret.ir.add(new PtrCopy(recv, rets.get(0)));
+            // NOTE: multiple return value is handled by
+            // `Return` stmt. For example:
+            // if `BB1 -> BB2(return x)`, `BB1 -> BB3(return y)`
+            // we, being aware of `caller_recv`, add
+            // `caller_recv = x` to `BB2` and
+            // `caller_recv = y` to `BB3`.
+            // Then, add `BB2 -> ret` and `BB3 -> ret`.
+            // So `BB ret` need not to have any `PtrCopy`.
         }
 
         return List.of(call, ret);
@@ -290,6 +306,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
 
     private class CFG {
         public ArrayList<BB> bbs = new ArrayList<>();
+        public Integer entry;
+        public TreeSet<Integer> exits = new TreeSet<>();
         public TreeMap<Integer, TreeSet<Integer>> edges = new TreeMap<>();
         public TreeMap<Integer, TreeSet<Integer>> revEdges = new TreeMap<>();
 
@@ -299,6 +317,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             for (var i = 0; i < bbs.size(); i++) {
                 s += i + ":\n" + bbs.get(i).toString() + "\n";
             }
+            s += "Entry: " + entry + "\n";
+            s += "Exits: " + exits.toString() + "\n";
             s += "Edges:\n";
             for (var i : edges.keySet()) {
                 s += i + " -> " + edges.get(i).toString() + "\n";
@@ -309,12 +329,12 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
 
     // List: entry, [exit1, exit2, ...]
     // Only build edges
-    private List<Integer> buildCFGEdges(JMethod method) {
+    private List<Integer> buildCFGEdges(JMethod method, PtrID caller_recv) {
         var entry_exits = new ArrayList<Integer>();
         var ir = method.getIR();
         var ircfg = allMethods.get(method);
         var basecnt = glbCFG.bbs.size();
-        ircfg.bbs.forEach(bb -> glbCFG.bbs.add(new BB(ir, bb.from, bb.to)));
+        ircfg.bbs.forEach(bb -> glbCFG.bbs.add(new BB(ir, bb.from, bb.to, caller_recv)));
         entry_exits.add(basecnt + ircfg.entry);
 
         for (var i = 0; i < ircfg.size(); i++) {
@@ -322,13 +342,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 var mth = ircfg.calls.get(i);
                 if (!mth.isAbstract()) {
                     var invoke = (Invoke) ir.getStmt(ircfg.bbs.get(i).to);
+                    var recv = glbPtrList.var2ptr(invoke.getLValue());
 
-                    var callee_bbs = buildCFGEdges(mth);
+                    var callee_bbs = buildCFGEdges(mth, recv);
                     var callee_entry = callee_bbs.get(0);
                     var callee_exits = callee_bbs.subList(1, callee_bbs.size());
                     glbCFG.bbs.addAll(BBsFromInvoke(invoke));
                     var call = glbCFG.bbs.size() - 2;
-                    // TODO: multi rets
                     var ret = call + 1;
                     // this -> call -> callee_entry
                     var set = glbCFG.edges.getOrDefault(basecnt + i, new TreeSet<>());
@@ -368,7 +388,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         return entry_exits;
     }
 
-    private void buildGlbCFGRevEdges() {
+    private void completeGLbCFG(List<Integer> entry_exits) {
+        // rev edges
         for (var i : glbCFG.edges.keySet()) {
             for (var j : glbCFG.edges.get(i)) {
                 var set = glbCFG.revEdges.getOrDefault(j, new TreeSet<>());
@@ -376,6 +397,9 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 glbCFG.revEdges.put(j, set);
             }
         }
+        // entry, exits
+        glbCFG.entry = entry_exits.get(0);
+        glbCFG.exits.addAll(entry_exits.subList(1, entry_exits.size()));
     }
 
     /**
@@ -459,8 +483,8 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         // TODO: Init
         allMethods.keySet().forEach(method -> initGlbPtrList(method.getIR()));
         logger.info("PtrList:\n{}", glbPtrList.toString());
-        buildCFGEdges(main);
-        buildGlbCFGRevEdges();
+        var glbEntryExits = buildCFGEdges(main, null);
+        completeGLbCFG(glbEntryExits);
         logger.info("CFG:\n{}", glbCFG.toString());
         var entry_out = getInitNewLoc();
         logger.info("Init NewLoc:\n{}", entry_out.tostr(glbPtrList));
