@@ -300,17 +300,31 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             return killed;
         }
 
-        private void updateLvalStateRecursively(PtrID lval, TreeSet<Integer> state, NewLoc outState) {
-            outState.obj.put(lval, new TreeSet<>(state));
+        // TODO: Recursively add.
+        //! Current this will produce unsound result on this example:
+        //! A a = new A();
+        //! C c = new C();
+        //! a.b.c = c;
+        //! A d = a;
+        //! test(1, d.b.c)
+        private void updateLvalState(PtrID lval, PtrID rval, NewLoc outState) {
+            TreeSet<Integer> rvalState = outState.obj.getOrDefault(rval, new TreeSet<>());
+            outState.obj.put(lval, new TreeSet<>(rvalState));
 
-            Optional<Var> v = glbPtrList.id2var(lval);
-            if (v.isPresent()) {
-                var m = glbPtrList.ifieldlist.get(v.get());
-                if (m != null) {
-                    m.forEach((jfield, id) -> {
-                        outState.obj.put(id, state);
-                    });
-                }
+            Optional<Var> lvar = glbPtrList.id2var(lval);
+            Optional<Var> rvar = glbPtrList.id2var(rval);
+
+            Optional<Map<JField, PtrID>> lmap = lvar.flatMap(v -> Optional.ofNullable(glbPtrList.ifieldlist.get(v)));
+            Optional<Map<JField, PtrID>> rmap = rvar.flatMap(v -> Optional.ofNullable(glbPtrList.ifieldlist.get(v)));
+
+            if (lmap.isPresent()) {
+                var lm = lmap.get();
+                lm.forEach((jfield, lid) -> {
+                    Optional<PtrID> rid = rmap.flatMap(rm -> Optional.ofNullable(rm.get(jfield)));
+                    TreeSet<Integer> fieldState = rid.flatMap(id -> Optional.ofNullable(outState.obj.get(id)))
+                            .orElse(rvalState);
+                    outState.obj.put(lid, fieldState);
+                });
             }
         }
 
@@ -331,9 +345,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             // transfer
             for (PtrCopy copy : this.ir) {
                 if (copy.isValid()) {
-                    TreeSet<Integer> rvalState = outState.obj.getOrDefault(copy.rval, new TreeSet<>());
-
-                    updateLvalStateRecursively(copy.lval, rvalState, outState);
+                    updateLvalState(copy.lval, copy.rval, outState);
                 }
             }
             return outState;
@@ -661,9 +673,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 NewLoc outState = bb.calcOut(Collections.singletonList(inState));
 
                 if (!outState.equals(bb.out)) {
-                    logger.info("BB {}'s out expand. changed=true. New loc: {}", bbIndex, outState.tostr(glbPtrList));
+                    logger.info("BB {}'s out expand. Old New Loc: {}, New loc: {}\n\n",
+                            bbIndex,
+                            bb.out.tostr(glbPtrList),
+                            outState.tostr(glbPtrList));
                     bb.out = outState;
                     changed = true;
+                    break;
                 }
             }
         }
