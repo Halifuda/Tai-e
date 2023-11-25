@@ -206,11 +206,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         public PtrCopy(StoreField stmt) {
             this.lval = glbPtrList.faccess2ptr(stmt.getLValue());
             this.rval = glbPtrList.var2ptr(stmt.getRValue());
+            logger.info("StoreField PtrCopy created: lval={}, rval={}", lval, rval);
         }
 
         public PtrCopy(LoadField stmt) {
             this.lval = glbPtrList.var2ptr(stmt.getLValue());
             this.rval = glbPtrList.faccess2ptr(stmt.getRValue());
+            logger.info("LoadField PtrCopy created: lval={}, rval={}", lval, rval);
         }
 
         public boolean isValid() {
@@ -269,6 +271,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     }
                 }
                 var copy = PtrCopyFromStmt(stmt, caller_recv);
+                logger.info("BB check stmt {}\n", stmt);
                 if (copy != null) {
                     this.ir.add(copy);
                     // handle implicit field sensitivity
@@ -276,16 +279,20 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     if (stmt instanceof Copy) {
                         var lvar = ((Copy) stmt).getLValue();
                         var rvar = ((Copy) stmt).getRValue();
-                        if (glbPtrList.ifieldlist.containsKey(lvar) && glbPtrList.ifieldlist.containsKey(rvar)) {
+                        logger.info("BB find copy {} {}\n", lvar, rvar);
+                        if (glbPtrList.ifieldlist.containsKey(rvar)) {
+                            logger.info("BB check rel\n");
                             var lfields = glbPtrList.ifieldlist.get(lvar);
                             var rfields = glbPtrList.ifieldlist.get(rvar);
-                            for (var key : rfields.keySet()) {
-                                if (!(lfields.containsKey((key)))) {
-                                    glbPtrList.addIField(rvar, key);
+                            for (var f : rfields.keySet()) {
+                                if (!(lfields.containsKey((f)))) {
+                                    glbPtrList.addIField(lvar, f);
                                 }
-                                this.ir.add(new PtrCopy(lfields.get(key), rfields.get(key)));
+                                logger.info("BB add rel {} {} {}\n", lvar, rvar, f);
+                                this.ir.add(new PtrCopy(lfields.get(f), rfields.get(f)));
                             }
                         }
+
                     }
                 }
             }
