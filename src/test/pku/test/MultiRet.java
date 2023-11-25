@@ -18,6 +18,6 @@ public class MultiRet {
         Benchmark.alloc(2);
         B b = new B();
         B c = rets(a, b, args);
-        Benchmark.test(1, c);
+        Benchmark.test(1, c); // expect: 1, 2
     }
 }

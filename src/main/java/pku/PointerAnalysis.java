@@ -206,13 +206,13 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         public PtrCopy(StoreField stmt) {
             this.lval = glbPtrList.faccess2ptr(stmt.getLValue());
             this.rval = glbPtrList.var2ptr(stmt.getRValue());
-            logger.info("StoreField PtrCopy created: lval={}, rval={}", lval, rval);
+            logger.debug("StoreField PtrCopy created: lval={}, rval={}", lval, rval);
         }
 
         public PtrCopy(LoadField stmt) {
             this.lval = glbPtrList.var2ptr(stmt.getLValue());
             this.rval = glbPtrList.faccess2ptr(stmt.getRValue());
-            logger.info("LoadField PtrCopy created: lval={}, rval={}", lval, rval);
+            logger.debug("LoadField PtrCopy created: lval={}, rval={}", lval, rval);
         }
 
         public boolean isValid() {
@@ -271,7 +271,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     }
                 }
                 var copy = PtrCopyFromStmt(stmt, caller_recv);
-                logger.info("BB check stmt {}\n", stmt);
+                logger.debug("BB check stmt {}\n", stmt);
                 if (copy != null) {
                     this.ir.add(copy);
                     // handle implicit field sensitivity
@@ -279,16 +279,16 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                     if (stmt instanceof Copy) {
                         var lvar = ((Copy) stmt).getLValue();
                         var rvar = ((Copy) stmt).getRValue();
-                        logger.info("BB find copy {} {}\n", lvar, rvar);
+                        logger.debug("BB find copy {} {}\n", lvar, rvar);
                         if (glbPtrList.ifieldlist.containsKey(rvar)) {
-                            logger.info("BB check rel\n");
+                            logger.debug("BB check rel\n");
                             var lfields = glbPtrList.ifieldlist.get(lvar);
                             var rfields = glbPtrList.ifieldlist.get(rvar);
                             for (var f : rfields.keySet()) {
                                 if (lfields == null || !(lfields.containsKey((f)))) {
                                     glbPtrList.addIField(lvar, f);
                                 }
-                                logger.info("BB add rel {} {} {}\n", lvar, rvar, f);
+                                logger.debug("BB add rel {} {} {}\n", lvar, rvar, f);
                                 this.ir.add(new PtrCopy(glbPtrList.ifieldlist.get(lvar).get(f), rfields.get(f)));
                             }
                         }
@@ -343,7 +343,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 outState.merge(state);
             }
 
-            // logger.info("Input: {}", outState.tostr(glbPtrList));
+            // logger.debug("Input: {}", outState.tostr(glbPtrList));
 
             // kill
             List<PtrID> killed = kill();
@@ -390,7 +390,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             var param = params.get(i);
             call.ir.add(new PtrCopy(param, arg));
             if (glbPtrList.ifieldlist.containsKey(arg)) {
-                logger.info("BB check rel\n");
+                logger.debug("BB check rel\n");
                 var lfields = glbPtrList.ifieldlist.get(param);
                 var rfields = glbPtrList.ifieldlist.get(arg);
                 for (var f : rfields.keySet()) {
@@ -404,7 +404,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         if (instance != null && tis != null) {
             call.ir.add(new PtrCopy(tis, instance));
             if (glbPtrList.ifieldlist.containsKey(instance)) {
-                logger.info("BB check rel\n");
+                logger.debug("BB check rel\n");
                 var lfields = glbPtrList.ifieldlist.get(tis);
                 var rfields = glbPtrList.ifieldlist.get(instance);
                 for (var f : rfields.keySet()) {
@@ -433,7 +433,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             var param = params.get(i);
             ret.ir.add(new PtrCopy(arg, param));
             if (glbPtrList.ifieldlist.containsKey(param)) {
-                logger.info("BB check rel\n");
+                logger.debug("BB check rel\n");
                 var lfields = glbPtrList.ifieldlist.get(arg);
                 var rfields = glbPtrList.ifieldlist.get(param);
                 for (var f : rfields.keySet()) {
@@ -448,7 +448,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         if (instance != null && tis != null) {
             ret.ir.add(new PtrCopy(instance, tis));
             if (glbPtrList.ifieldlist.containsKey(tis)) {
-                logger.info("BB check rel\n");
+                logger.debug("BB check rel\n");
                 var lfields = glbPtrList.ifieldlist.get(instance);
                 var rfields = glbPtrList.ifieldlist.get(tis);
                 for (var f : rfields.keySet()) {
@@ -498,7 +498,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         var basecnt = glbCFG.bbs.size();
         for (int i = 0; i < ircfg.bbs.size(); i++) {
             var irbb = ircfg.bbs.get(i);
-            logger.info("in buildCFGEdges: irbb.from {}, irbb.to {}", irbb.from, irbb.to);
+            logger.debug("in buildCFGEdges: irbb.from {}, irbb.to {}", irbb.from, irbb.to);
             var bb = new BB(ir, irbb.from, irbb.to, caller_recv);
             glbCFG.bbs.add(bb);
             if (bb.benchmarkTest.isPresent()) {
@@ -511,7 +511,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         for (var i = 0; i < ircfg.size(); i++) {
             if (ircfg.calls.containsKey(i)) {
                 var mth = ircfg.calls.get(i);
-                logger.info("ircfg: {} / {}", i, ircfg.size());
+                logger.debug("ircfg: {} / {}", i, ircfg.size());
                 if (!mth.isAbstract()) {
                     var invoke = (Invoke) ir.getStmt(ircfg.bbs.get(i).to);
                     var recv = glbPtrList.var2ptr(invoke.getLValue());
@@ -648,7 +648,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         var main = world.getMainMethod();
         // Preprocess
         classes.forEach(jclass -> {
-            logger.info("Preprocessing class {}...", jclass.getName());
+            logger.debug("Preprocessing class {}...", jclass.getName());
             jclass.getDeclaredMethods().forEach(method -> {
                 if (!method.isAbstract()) {
                     preprocess.analysis(method.getIR());
@@ -663,17 +663,17 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         // TODO: Init
         // Build Ptr List
         allMethods.keySet().forEach(method -> initGlbPtrList(method.getIR()));
-        logger.info("PtrList:\n{}", glbPtrList.toString());
+        logger.debug("PtrList:\n{}", glbPtrList.toString());
 
         // Build global CFG
         var glbEntryExits = buildCFGEdges(main, null, 0);
         completeGLbCFG(glbEntryExits);
-        logger.info("CFG:\n{}", glbCFG.toString());
-        logger.info("glbTestid2BBindex: {}", glbTestid2BBindex);
+        logger.debug("CFG:\n{}", glbCFG.toString());
+        logger.debug("glbTestid2BBindex: {}", glbTestid2BBindex);
 
         // Build global new locations
         initial.merge(getInitNewLoc());
-        logger.info("Init NewLoc:\n{}", initial.tostr(glbPtrList));
+        logger.debug("Init NewLoc:\n{}", initial.tostr(glbPtrList));
 
         // Dataflow analyze pointers.
         dataflowAnalyze();
@@ -725,7 +725,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 NewLoc outState = bb.calcOut(Collections.singletonList(inState));
 
                 if (!outState.equals(bb.out)) {
-                    logger.info("BB {}'s out expand. Old New Loc: {}, New loc: {}\n\n",
+                    logger.debug("BB {}'s out expand. Old New Loc: {}, New loc: {}\n\n",
                             bbIndex,
                             bb.out.tostr(glbPtrList),
                             outState.tostr(glbPtrList));
@@ -903,20 +903,20 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                 }
             }
 
-            logger.info("IRCFG @ {}", ir.getMethod().getName());
+            logger.debug("IRCFG @ {}", ir.getMethod().getName());
             for (var i = 0; i < n; i++) {
-                logger.info("{}:", i);
+                logger.debug("{}:", i);
                 for (var j = bbs.get(i).from; j <= bbs.get(i).to; j++) {
-                    logger.info("  {}", ir.getStmt(j));
+                    logger.debug("  {}", ir.getStmt(j));
                 }
             }
-            logger.info("Entry: {}", entry);
-            logger.info("Exits: {}", exits.toString());
-            logger.info("Calls: {}", calls.toString());
+            logger.debug("Entry: {}", entry);
+            logger.debug("Exits: {}", exits.toString());
+            logger.debug("Calls: {}", calls.toString());
             for (var i = 0; i < n; i++) {
-                logger.info("{} -> {}", i, edges.get(i).toString());
+                logger.debug("{} -> {}", i, edges.get(i).toString());
             }
-            logger.info("\n");
+            logger.debug("\n");
         }
 
         public final int size() {
