@@ -285,11 +285,11 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
                             var lfields = glbPtrList.ifieldlist.get(lvar);
                             var rfields = glbPtrList.ifieldlist.get(rvar);
                             for (var f : rfields.keySet()) {
-                                if (!(lfields.containsKey((f)))) {
+                                if (lfields == null || !(lfields.containsKey((f)))) {
                                     glbPtrList.addIField(lvar, f);
                                 }
                                 logger.info("BB add rel {} {} {}\n", lvar, rvar, f);
-                                this.ir.add(new PtrCopy(lfields.get(f), rfields.get(f)));
+                                this.ir.add(new PtrCopy(glbPtrList.ifieldlist.get(lvar).get(f), rfields.get(f)));
                             }
                         }
 
@@ -389,9 +389,31 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             var arg = args.get(i);
             var param = params.get(i);
             call.ir.add(new PtrCopy(param, arg));
+            if (glbPtrList.ifieldlist.containsKey(arg)) {
+                logger.info("BB check rel\n");
+                var lfields = glbPtrList.ifieldlist.get(param);
+                var rfields = glbPtrList.ifieldlist.get(arg);
+                for (var f : rfields.keySet()) {
+                    if (lfields == null || !(lfields.containsKey((f)))) {
+                        glbPtrList.addIField(param, f);
+                    }
+                    call.ir.add(new PtrCopy(glbPtrList.ifieldlist.get(param).get(f), rfields.get(f)));
+                }
+            }
         }
         if (instance != null && tis != null) {
             call.ir.add(new PtrCopy(tis, instance));
+            if (glbPtrList.ifieldlist.containsKey(instance)) {
+                logger.info("BB check rel\n");
+                var lfields = glbPtrList.ifieldlist.get(tis);
+                var rfields = glbPtrList.ifieldlist.get(instance);
+                for (var f : rfields.keySet()) {
+                    if (lfields == null || !(lfields.containsKey((f)))) {
+                        glbPtrList.addIField(tis, f);
+                    }
+                    call.ir.add(new PtrCopy(glbPtrList.ifieldlist.get(tis).get(f), rfields.get(f)));
+                }
+            }
         }
         // NOTE: return value is handled by `Return` stmt.
         // For example:
@@ -410,10 +432,32 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
             var arg = args.get(i);
             var param = params.get(i);
             ret.ir.add(new PtrCopy(arg, param));
+            if (glbPtrList.ifieldlist.containsKey(param)) {
+                logger.info("BB check rel\n");
+                var lfields = glbPtrList.ifieldlist.get(arg);
+                var rfields = glbPtrList.ifieldlist.get(param);
+                for (var f : rfields.keySet()) {
+                    if (lfields == null || !(lfields.containsKey((f)))) {
+                        glbPtrList.addIField(arg, f);
+                    }
+                    ret.ir.add(new PtrCopy(glbPtrList.ifieldlist.get(arg).get(f), rfields.get(f)));
+                }
+            }
         }
 
         if (instance != null && tis != null) {
             ret.ir.add(new PtrCopy(instance, tis));
+            if (glbPtrList.ifieldlist.containsKey(tis)) {
+                logger.info("BB check rel\n");
+                var lfields = glbPtrList.ifieldlist.get(instance);
+                var rfields = glbPtrList.ifieldlist.get(tis);
+                for (var f : rfields.keySet()) {
+                    if (lfields == null || !(lfields.containsKey((f)))) {
+                        glbPtrList.addIField(instance, f);
+                    }
+                    ret.ir.add(new PtrCopy(glbPtrList.ifieldlist.get(instance).get(f), rfields.get(f)));
+                }
+            }
         }
 
         return List.of(call, ret);
@@ -454,6 +498,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         var basecnt = glbCFG.bbs.size();
         for (int i = 0; i < ircfg.bbs.size(); i++) {
             var irbb = ircfg.bbs.get(i);
+            logger.info("in buildCFGEdges: irbb.from {}, irbb.to {}", irbb.from, irbb.to);
             var bb = new BB(ir, irbb.from, irbb.to, caller_recv);
             glbCFG.bbs.add(bb);
             if (bb.benchmarkTest.isPresent()) {
@@ -466,6 +511,7 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         for (var i = 0; i < ircfg.size(); i++) {
             if (ircfg.calls.containsKey(i)) {
                 var mth = ircfg.calls.get(i);
+                logger.info("ircfg: {} / {}", i, ircfg.size());
                 if (!mth.isAbstract()) {
                     var invoke = (Invoke) ir.getStmt(ircfg.bbs.get(i).to);
                     var recv = glbPtrList.var2ptr(invoke.getLValue());
