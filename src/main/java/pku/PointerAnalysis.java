@@ -308,12 +308,12 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         }
 
         // TODO: Recursively add.
-        //! Current this will produce unsound result on this example:
-        //! A a = new A();
-        //! C c = new C();
-        //! a.b.c = c;
-        //! A d = a;
-        //! test(1, d.b.c)
+        // ! Current this will produce unsound result on this example:
+        // ! A a = new A();
+        // ! C c = new C();
+        // ! a.b.c = c;
+        // ! A d = a;
+        // ! test(1, d.b.c)
         private void updateLvalState(PtrID lval, PtrID rval, NewLoc outState) {
             TreeSet<Integer> rvalState = outState.obj.getOrDefault(rval, new TreeSet<>());
             outState.obj.put(lval, new TreeSet<>(rvalState));
@@ -393,28 +393,27 @@ public class PointerAnalysis extends PointerAnalysisTrivial {
         if (instance != null && tis != null) {
             call.ir.add(new PtrCopy(tis, instance));
         }
-        if (recv != null && rets.size() > 0) {
-            // NOTE: return value is handled by `Return` stmt.
-            // For example:
-            // if `BB1 -> BB2(return x)`, `BB1 -> BB3(return y)`
-            // we, being aware of `caller_recv`, add
-            // `caller_recv = x` to `BB2` and
-            // `caller_recv = y` to `BB3`.
-            // Then, add `BB2 -> ret` and `BB3 -> ret`.
-            // So `ret` only handles this and params.
+        // NOTE: return value is handled by `Return` stmt.
+        // For example:
+        // if `BB1 -> BB2(return x)`, `BB1 -> BB3(return y)`
+        // we, being aware of `caller_recv`, add
+        // `caller_recv = x` to `BB2` and
+        // `caller_recv = y` to `BB3`.
+        // Then, add `BB2 -> ret` and `BB3 -> ret`.
+        // So `ret` only handles this and params.
 
-            // Back propagate the relationship.
-            // For example: in `call` we add `x = a`, then in
-            // `ret` we add `a = x`. So, if `a` is somehow
-            // changed in callee, we can detect it in caller.
-            for (int i = 0; i < args.size(); i++) {
-                var arg = args.get(i);
-                var param = params.get(i);
-                ret.ir.add(new PtrCopy(arg, param));
-            }
-            if (instance != null && tis != null) {
-                call.ir.add(new PtrCopy(instance, tis));
-            }
+        // Back propagate the relationship.
+        // For example: in `call` we add `x = a`, then in
+        // `ret` we add `a = x`. So, if `a` is somehow
+        // changed in callee, we can detect it in caller.
+        for (int i = 0; i < args.size(); i++) {
+            var arg = args.get(i);
+            var param = params.get(i);
+            ret.ir.add(new PtrCopy(arg, param));
+        }
+
+        if (instance != null && tis != null) {
+            ret.ir.add(new PtrCopy(instance, tis));
         }
 
         return List.of(call, ret);
